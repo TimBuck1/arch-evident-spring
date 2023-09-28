@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.*;
 
 import example.customer.Customer.CustomerIdentifier;
 import example.order.EventPublicationRegistryTests.FailingAsyncTransactionalEventListener;
+import example.order.EventPublicationRegistryTests.Infrastructure;
 import example.order.Order.OrderCompleted;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
@@ -26,25 +27,43 @@ import lombok.RequiredArgsConstructor;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.modulith.events.ApplicationModuleListener;
+import org.springframework.modulith.events.EventExternalized;
 import org.springframework.modulith.events.core.EventPublicationRegistry;
 import org.springframework.modulith.test.ApplicationModuleTest;
 import org.springframework.modulith.test.Scenario;
 import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.TestPropertySource;
+import org.testcontainers.containers.KafkaContainer;
+import org.testcontainers.utility.DockerImageName;
 
 /**
  * @author Oliver Drotbohm
  */
 @ApplicationModuleTest
 @RequiredArgsConstructor
-@Import(FailingAsyncTransactionalEventListener.class)
+@Import({ FailingAsyncTransactionalEventListener.class, Infrastructure.class })
 @DirtiesContext
+@TestPropertySource(properties = "spring.modulith.events.externalization.enabled=true")
 class EventPublicationRegistryTests {
 
 	private final OrderManagement orders;
 	private final EventPublicationRegistry registry;
 	private final FailingAsyncTransactionalEventListener listener;
+
+	@TestConfiguration
+	static class Infrastructure {
+
+		@Bean
+		@ServiceConnection
+		KafkaContainer kafkaContainer() {
+			return new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:latest"));
+		}
+	}
 
 	@Test
 	void leavesPublicationIncompleteForFailingListener(Scenario scenario) throws Exception {
@@ -52,8 +71,9 @@ class EventPublicationRegistryTests {
 		var order = new Order(new CustomerIdentifier(UUID.randomUUID()));
 
 		scenario.stimulate(() -> orders.complete(order))
-				.andWaitForStateChange(() -> listener.getEx())
-				.andVerify(__ -> {
+				.andWaitForEventOfType(EventExternalized.class)
+				.toArriveAndVerify(__ -> {
+					assertThat(listener.getEx()).isNotNull();
 					assertThat(registry.findIncompletePublications()).hasSize(1);
 				});
 	}
